@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <map>
+#include <unordered_map>
 #include <memory>
 #include <vector>
 
@@ -21,6 +22,30 @@
 
 #include <dune/alugrid/common/hsfc.hh>
 
+// custom specialization of std::hash can be injected in namespace std
+// TODO: Maybe use 2^13-1 or 2^17-1 as primes instead of just shifting
+namespace std
+{
+  template<> struct hash<std::array< unsigned, 4> >
+  {
+    typedef std::array< unsigned, 4> argument_type;
+    typedef std::size_t result_type;
+    result_type operator()(argument_type const& face) const noexcept
+    {
+      return result_type((face[0] << 24) ^ (face[1] << 16) ^ (face[2] << 8) ^ face[3]);
+    }
+  };
+
+  template<> struct hash<std::array< unsigned, 3> >
+  {
+    typedef std::array< unsigned, 3> argument_type;
+    typedef std::size_t result_type;
+    result_type operator()(argument_type const& face) const noexcept
+    {
+      return result_type((face[0] << 24) ^ (face[1] << 12) ^ face[2]);
+    }
+  };
+}
 namespace Dune
 {
   /** \brief Factory class for ALUGrids */
@@ -100,7 +125,10 @@ namespace Dune
     typedef std::map < FaceType, int > BoundaryIdMap;
     typedef std::vector< std::pair< BndPair, BndPair > > PeriodicBoundaryVector;
     typedef std::pair< unsigned int, int > SubEntity;
-    typedef std::map< FaceType, SubEntity, FaceLess > FaceMap;
+
+    typedef std::unordered_map < FaceType, std::pair< unsigned int, unsigned int> > InteriorFaceMap;
+    typedef std::unordered_map < FaceType, unsigned int > BoundaryFaceMap;
+
 
     typedef std::map< FaceType, const DuneBoundaryProjectionType* > BoundaryProjectionMap;
     typedef std::vector< const DuneBoundaryProjectionType* > BoundaryProjectionVector;
@@ -135,15 +163,13 @@ namespace Dune
       BndPair bndPair;
       for( unsigned int i = 0; i < numFaceCorners; ++i )
       {
-        const unsigned int j = FaceTopologyMappingType::dune2aluVertex( i );
-        bndPair.first[ j ] = face[ i ];
+        bndPair.first[ i ] = face[ i ];
       }
       bndPair.second = id;
       return bndPair;
     }
 
-    void markLongestEdge( std::vector< bool >& elementOrientation, const bool resortElements = true  ) ;
-    void markLongestEdge();
+    void markLongestEdge( const bool resortElements = true  ) ;
 
   private:
     // return grid object
@@ -329,6 +355,19 @@ namespace Dune
     //! set longest edge marking for biscetion grids (default is off)
     void setLongestEdgeFlag (bool flag = true) { markLongestEdge_ = flag ; }
 
+    //! set true if grid was created using DGF Interval or StructuredGridFactory
+    void setCartesian ( const bool cartesian )
+    {
+      if ( elementType == hexa )
+      {
+        cartesian_ = cartesian;
+      }
+      else
+      {
+        DUNE_THROW(GridError,"Only cube grids can be Cartesian!");
+      }
+    }
+
     /** \brief Return the Communication used by the grid factory
      *
      * Use the Communication available from the grid.
@@ -356,6 +395,8 @@ namespace Dune
 
     void doInsertVertex ( const VertexInputType &pos, const GlobalIdType globalId );
     void doInsertBoundary ( int element, int face, int boundaryId );
+    void doInsertFace ( const unsigned elIndex, const int faceNumber );
+    void doInsertFace ( FaceType face, const unsigned elIndex );
 
     GlobalIdType globalId ( const VertexId &id ) const
     {
@@ -369,23 +410,18 @@ namespace Dune
       return vertices_[ id ].first;
     }
 
-    const VertexInputType inputPosition ( const VertexId &id ) const
-    {
-      alugrid_assert ( id < vertices_.size() );
-      VertexType vertex = vertices_[ id ].first;
-      VertexInputType iVtx(0.);
-      for(unsigned i = 0 ; i < dimensionworld ; ++i)
-        iVtx[i] = vertex[i];
-      return iVtx;
-    }
-
     void assertGeometryType( const GeometryType &geometry );
     static void generateFace ( const ElementType &element, const int f, FaceType &face );
     void generateFace ( const SubEntity &subEntity, FaceType &face ) const;
-    void correctElementOrientation ();
+    static int getFaceIndex ( const ElementType &element, const FaceType &face );
+    int getFaceIndex ( const unsigned int elIndex, const FaceType &face ) const;
+    bool correctElementOrientation ( std::vector<int> & simplexTypes );
+    void calculateIsRear ( std::vector<std::vector<bool> > & isRearElements, std::unordered_map<FaceType, bool> & isRearBoundaries );
+    bool bisectionCompatibility ( std::vector<int> & simplexTypes );
     bool identifyFaces ( const Transformation &transformation, const FaceType &key1, const FaceType &key2, const int defaultId );
-    void searchPeriodicNeighbor ( FaceMap &faceMap, typename FaceMap::iterator &pos, const int defaultId  );
-    void reinsertBoundary ( const FaceMap &faceMap, const typename FaceMap::const_iterator &pos, const int id );
+    bool isArtificialFace ( const FaceType& face ) const;
+    void searchPeriodicNeighbor ( BoundaryFaceMap &boundaryFaceMap, typename BoundaryFaceMap::iterator &pos, const int defaultId  );
+    void reinsertBoundary ( const typename BoundaryFaceMap::const_iterator &pos, const int id );
     void recreateBoundaryIds ( const int defaultId = 1 );
 
     // sort elements according to hilbert space filling curve (if Zoltan is available)
@@ -395,6 +431,9 @@ namespace Dune
 
     VertexVector vertices_;
     ElementVector elements_;
+    //boundaryIds_ contains unsorted face keys, all other face maps have sorted keys
+    InteriorFaceMap interiorFaces_;
+    BoundaryFaceMap boundaryFaces_;
     BoundaryIdMap boundaryIds_,insertionOrder_;
     PeriodicBoundaryVector periodicBoundaries_;
     ALU3DSPACE ProjectVertexPtr globalProjection_ ;
@@ -412,6 +451,7 @@ namespace Dune
     std::vector< unsigned int > ordering_;
 
     bool markLongestEdge_;
+    bool cartesian_;
   };
 
 
@@ -531,10 +571,16 @@ namespace Dune
     foundGlobalIndex_( false ),
     communicator_( communicator ),
     curveType_( SpaceFillingCurveOrderingType :: DefaultCurve ),
-    markLongestEdge_( ALUGrid::dimension == 2 )
+    markLongestEdge_( ALUGrid::dimension == 2 ),
+    cartesian_( false )
   {
     BoundarySegmentWrapperType::registerFactory();
     ALUProjectionType::registerFactory();
+    if(ALUGrid::dimension == 2 && elementType == tetra)
+    {
+      // fake vertex that every tetra is connected to
+      vertices_.push_back( std::make_pair( VertexType{0.0,0.0,1.0}, 0 ) );
+    }
   }
 
   template< class ALUGrid >
@@ -551,10 +597,16 @@ namespace Dune
     foundGlobalIndex_( false ),
     communicator_( communicator ),
     curveType_( SpaceFillingCurveOrderingType :: DefaultCurve ),
-    markLongestEdge_( ALUGrid::dimension == 2 )
+    markLongestEdge_( ALUGrid::dimension == 2 ),
+    cartesian_( false )
   {
     BoundarySegmentWrapperType::registerFactory();
     ALUProjectionType::registerFactory();
+    if(ALUGrid::dimension == 2 && elementType == tetra)
+    {
+      // fake vertex that every tetra is connected to
+      vertices_.push_back( std::make_pair( VertexType{0.0,0.0,1.0}, 0 ) );
+    }
   }
 
   template< class ALUGrid >
@@ -571,10 +623,16 @@ namespace Dune
     foundGlobalIndex_( false ),
     communicator_( communicator ),
     curveType_( SpaceFillingCurveOrderingType :: DefaultCurve ),
-    markLongestEdge_( ALUGrid::dimension == 2 )
+    markLongestEdge_( ALUGrid::dimension == 2 ),
+    cartesian_( false )
   {
     BoundarySegmentWrapperType::registerFactory();
     ALUProjectionType::registerFactory();
+    if(ALUGrid::dimension == 2 && elementType == tetra)
+    {
+      // fake vertex that every tetra is connected to
+      vertices_.push_back( std::make_pair( VertexType{0.0,0.0,1.0}, 0 ) );
+    }
   }
 
   template< class ALUGrid >
@@ -664,9 +722,50 @@ namespace Dune
     generateFace( elements_[ subEntity.first ], subEntity.second, face );
   }
 
+  //get FaceIndex for a (sorted) face
+  template< class ALUGrid >
+  inline int ALU3dGridFactory< ALUGrid >
+    :: getFaceIndex(const unsigned int elIndex, const FaceType & face) const
+  {
+    return getFaceIndex(elements_[ elIndex ], face);
+  }
+
+  //get FaceIndex for a (sorted) face
+  template< class ALUGrid >
+  inline int ALU3dGridFactory< ALUGrid >
+    :: getFaceIndex(const ElementType & el, const FaceType & face)
+  {
+    FaceType sortedFace = face;
+    std::sort(sortedFace.begin(),sortedFace.end());
+
+    FaceType compareFace;
+    for(int i = 0; i < 6; ++i)
+    {
+      generateFace(el, i, compareFace);
+      std::sort(compareFace.begin(), compareFace.end());
+      if(compareFace[0] != sortedFace[0])
+        continue;
+      if(compareFace[1] != sortedFace[1])
+        continue;
+      if(compareFace[2] != sortedFace[2])
+        continue;
+      return i;
+    }
+    return -1;
+  }
+
+  namespace detail
+  {
+    // returns true if mesh-consistency was found during compilation of library
+    bool correctCubeOrientationAvailable();
+
+    // implemented in grifactory.cc to be compiled into the lib
+    bool correctCubeOrientation( const int dimension,
+                                 const std::vector< Dune::FieldVector<double,3> >& vertices,
+                                 std::vector<std::vector<unsigned int> >& elements) ;
+  }
+
 } // end namespace Dune
 
-#if COMPILE_ALUGRID_INLINE
-  #include "gridfactory.cc"
-#endif
+#include "gridfactory_imp.cc"
 #endif

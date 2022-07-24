@@ -457,7 +457,8 @@ namespace Dune
       // for structured grids, do not mark longest edge
       // not necessary
       factory.setLongestEdgeFlag(false);
-
+      // set Cartesian flag in factory
+      factory.setCartesian( true );
       // create shared grid pointer
       return SharedPtrType( factory.createGrid( true, true, name ) );
     }

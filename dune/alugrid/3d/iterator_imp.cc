@@ -66,7 +66,7 @@ alu_inline void ALU3dGridIntersectionIterator<GridImp> ::
 setInteriorItem (const HElementType & elem, const BNDFaceType& ghost, int wLevel)
 {
   // get correct face number
-  index_ = ElementTopo::alu2duneFace( ghost.getGhost().second );
+  index_ = ghost.getGhost().second ;
 
   // store ghost for method inside
   ghost_   = &ghost;
@@ -156,7 +156,7 @@ assign(const ALU3dGridIntersectionIterator<GridImp> & org)
     innerLevel_ = org.innerLevel_;
     index_      = org.index_;
     connector_.updateFaceInfo(org.connector_.face(),innerLevel_,
-                              item_->twist(ElementTopo::dune2aluFace(index_)));
+                              item_->isRear(index_));
     geoProvider_.resetFaceGeom();
   }
   else {
@@ -280,7 +280,7 @@ template<class GridImp>
 alu_inline int
 ALU3dGridIntersectionIterator< GridImp >::indexInInside () const
 {
-  alugrid_assert (ElementTopo::dune2aluFace(index_) == connector_.innerALUFaceIndex());
+  alugrid_assert (index_ == connector_.innerALUFaceIndex());
   return index_;
 }
 
@@ -297,21 +297,21 @@ template< class GridImp >
 alu_inline int
 ALU3dGridIntersectionIterator< GridImp >::indexInOutside () const
 {
-  return ElementTopo::alu2duneFace( connector_.outerALUFaceIndex() );
+  return  connector_.outerALUFaceIndex() ;
 }
 
 template< class GridImp >
 alu_inline typename ALU3dGridIntersectionIterator< GridImp >::Twist
 ALU3dGridIntersectionIterator< GridImp >::twistInInside () const
 {
-  return Twist( connector_.duneTwist( indexInInside(), connector_.innerTwist() ) );
+  return Twist( connector_.duneTwist( indexInInside(), 0 ) );
 }
 
 template< class GridImp >
 alu_inline typename ALU3dGridIntersectionIterator< GridImp >::Twist
 ALU3dGridIntersectionIterator< GridImp >::twistInOutside () const
 {
-  return Twist( connector_.duneTwist( indexInOutside(), connector_.outerTwist() ) );
+  return Twist( connector_.duneTwist( indexInOutside(), 0 ) );
 }
 
 template< class GridImp >
@@ -444,7 +444,7 @@ ALU3dGridIntersectionIterator<GridImp>::
 getFace(const GEOTetraElementType& elem, int index) const
 {
   alugrid_assert (index >= 0 && index < numFaces);
-  return elem.myhface(ElementTopo::dune2aluFace(index));
+  return elem.myhface(index);
 }
 
 template <class GridImp>
@@ -453,7 +453,7 @@ ALU3dGridIntersectionIterator<GridImp>::
 getFace(const GEOHexaElementType& elem, int index) const
 {
   alugrid_assert (index >= 0 && index < numFaces);
-  return elem.myhface(ElementTopo::dune2aluFace(index));
+  return elem.myhface(index);
 }
 
 template <class GridImp>
@@ -463,7 +463,7 @@ setNewFace(const GEOFaceType& newFace)
   alugrid_assert ( ! ghost_ );
   alugrid_assert ( innerLevel_ == item_->level() );
   connector_.updateFaceInfo(newFace,innerLevel_,
-              item_->twist(ElementTopo::dune2aluFace(index_)) );
+              item_->isRear(index_) );
   geoProvider_.resetFaceGeom();
 }
 
@@ -473,7 +473,7 @@ setGhostFace(const GEOFaceType& newFace)
 {
   alugrid_assert ( ghost_ );
   alugrid_assert ( innerLevel_ == ghost_->level() );
-  connector_.updateFaceInfo(newFace,innerLevel_, ghost_->twist(0) );
+  connector_.updateFaceInfo(newFace,innerLevel_, ghost_->isRear(0) );
   geoProvider_.resetFaceGeom();
 }
 
@@ -555,7 +555,7 @@ setInteriorItem (const HElementType & elem, const BNDFaceType& ghost, int wLevel
   ghost_   = &ghost;
   item_   = static_cast<const IMPLElementType *> (&elem);
   // get correct face number
-  index_ = ElementTopo::alu2duneFace( ghost.getGhost().second );
+  index_ = ghost.getGhost().second ;
 
   innerLevel_  = wLevel;
 
@@ -626,8 +626,8 @@ setNewFace(const GEOFaceType& newFace)
   levelNeighbor_ = (newFace.level() == innerLevel_);
   connector_.updateFaceInfo(newFace, innerLevel_,
               ( ImplTraits::isGhost( ghost_ ) ) ?
-                 ghost_->twist(0) :
-                 item_->twist(ElementTopo::dune2aluFace( index_ ))
+                 ghost_->isRear(0) :
+                 item_->isRear( index_ )
               );
   geoProvider_.resetFaceGeom();
 
